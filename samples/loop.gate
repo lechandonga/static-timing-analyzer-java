@@ -1,0 +1,13 @@
+input CLK1 A
+output Y
+instance ff1 DFF
+instance inv1 INV
+instance inv2 INV
+instance buf1 BUF
+net n_clk driver CLK1 load ff1/CLK
+net n_a driver A load ff1/D
+net n_q driver ff1/Q load inv1/A
+net n_l1 driver inv1/Z load inv2/A
+net n_l2 driver inv2/Z load inv1/A
+net n_out driver inv1/Z load buf1/A
+net n_y driver buf1/Z load Y

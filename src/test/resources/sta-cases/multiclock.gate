@@ -1,0 +1,16 @@
+input CLK1 CLK2 A
+output Y CDC
+instance ff1 DFF
+instance ff2 DFF
+instance ff3 DFF
+instance buf1 BUF
+instance and1 AND2
+net n_clk1 driver CLK1 load ff1/CLK ff2/CLK
+net n_clk2 driver CLK2 load ff3/CLK
+net n_a driver A load ff1/D
+net n_q1 driver ff1/Q load buf1/A
+net n_b driver buf1/Z load ff2/D and1/A
+net n_q2 driver ff2/Q load and1/B
+net n_y driver and1/Z load Y
+net n_cdc driver ff2/Q load ff3/D
+net n_cdc_out driver ff3/Q load CDC

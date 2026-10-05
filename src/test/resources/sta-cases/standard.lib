@@ -1,0 +1,16 @@
+time_unit ns
+cell BUF {
+    arc A -> Z comb delay 0.10 0.12
+}
+cell INV {
+    arc A -> Z comb delay 0.08 0.10
+}
+cell AND2 {
+    arc A -> Z comb delay 0.15 0.18
+    arc B -> Z comb delay 0.15 0.18
+}
+cell DFF {
+    arc CLK -> Q c2q delay 0.20 0.24
+    check D vs CLK setup 0.05
+    check D vs CLK hold 0.02
+}
