@@ -1,0 +1,6 @@
+input A
+output Y
+inst U1 INV
+  pin A A
+  pin Y Y
+endinst

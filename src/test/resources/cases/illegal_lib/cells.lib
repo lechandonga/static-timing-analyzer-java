@@ -1,0 +1,6 @@
+unit MHz
+cell INV comb
+  pin A comb
+  pin Y comb
+  delay A Y 0.05
+endcell

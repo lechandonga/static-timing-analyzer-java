@@ -1,0 +1,29 @@
+// 示例单元库：时间单位 ns
+unit ns
+
+cell INV comb
+  pin A comb
+  pin Y comb
+  delay A Y 0.05
+endcell
+
+cell BUF2 comb
+  pin A comb
+  pin Y comb
+  delay A Y 0.10
+endcell
+
+cell AND2 comb
+  pin A comb
+  pin B comb
+  pin Y comb
+  delay A Y 0.12
+  delay B Y 0.14
+endcell
+
+cell DFFX seq
+  pin D seq_in
+  pin CK clk
+  pin Q seq_out
+  timing setup=0.05 hold=0.02 clk_to_q=0.08
+endcell

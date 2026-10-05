@@ -1,0 +1,40 @@
+// 示例网表：CLK 驱动两级寄存器，中间组合逻辑，另有一条跨时钟域路径
+input  CLK
+input  CLK2
+input  IN1
+output OUT1
+output OUT2
+
+inst U1 DFFX
+  pin D  IN1
+  pin CK CLK
+  pin Q  N1
+endinst
+
+inst U2 BUF2
+  pin A N1
+  pin Y N2
+endinst
+
+inst U3 AND2
+  pin A N2
+  pin B N1
+  pin Y N3
+endinst
+
+inst U4 DFFX
+  pin D  N3
+  pin CK CLK
+  pin Q  N4
+endinst
+
+inst U5 INV
+  pin A N4
+  pin Y OUT1
+endinst
+
+inst U6 DFFX
+  pin D  N3
+  pin CK CLK2
+  pin Q  OUT2
+endinst
