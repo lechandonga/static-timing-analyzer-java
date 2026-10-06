@@ -17,6 +17,12 @@ import java.util.Set;
  * set_output_delay 0.5 -clock CLK [get_ports OUT1]
  * set_false_path -from CLK -to U2/D
  * set_multicycle_path 2 -from CLK -to U3/D
+ * set_clock_uncertainty 0.05
+ * set_clock_uncertainty 0.05 [get_clocks CLK]
+ * set_clock_uncertainty 0.05 -from CLK1 -to U3/D
+ * set_timing_derate 0.95
+ * set_timing_derate -early 0.90 -late 1.10 -cell BUF
+ * set_timing_derate -late 1.05 -instance U2
  * </pre>
  */
 public class ConstraintsParser {
@@ -36,10 +42,145 @@ public class ConstraintsParser {
                 case "set_output_delay" -> parseIoDelay(t, c, false, src, rl.number());
                 case "set_false_path" -> parseException(t, c, exceptionKeys, "FALSE_PATH", src, rl.number());
                 case "set_multicycle_path" -> parseMultiCycle(t, c, exceptionKeys, src, rl.number());
+                case "set_clock_uncertainty" -> parseUncertainty(t, c, src, rl.number());
+                case "set_timing_derate" -> parseDerate(t, c, src, rl.number());
                 default -> throw new StaException("SYNTAX_ERROR", src, rl.number(), "未知约束命令: " + t[0]);
             }
         }
         return c;
+    }
+
+    private void parseUncertainty(String[] t, Constraints c, String src, int line) {
+        if (t.length < 2) {
+            throw new StaException("SYNTAX_ERROR", src, line,
+                    "用法: set_clock_uncertainty <值> | <值> [get_clocks <时钟>] | <值> -from <起点> -to <终点>");
+        }
+        double value = LineReader.number(t[1], src, line);
+        Constraints.UncertaintyRule rule;
+        if (t.length == 2) {
+            rule = Constraints.UncertaintyRule.global(value);
+            if (c.globalUncertainty() != null) {
+                throw new StaException("DUPLICATE_DEFINITION", src, line,
+                        "全局时钟不确定度重复声明");
+            }
+            c.setGlobalUncertainty(value);
+            return;
+        }
+        if ((t.length == 5 && t[2].equals("[get_clocks") && t[4].equals("]"))
+                || (t.length == 4 && t[2].startsWith("[get_clocks") && t[3].endsWith("]"))) {
+            String clock;
+            if (t.length == 5) {
+                clock = t[3];
+            } else {
+                String joined = (t[2] + " " + t[3]).substring("[get_clocks".length());
+                clock = joined.substring(0, joined.length() - 1).trim();
+                if (clock.isEmpty()) {
+                    throw new StaException("SYNTAX_ERROR", src, line,
+                            "用法: set_clock_uncertainty <值> [get_clocks <时钟>]");
+                }
+            }
+            rule = Constraints.UncertaintyRule.clock(clock, value);
+            if (c.clockUncertainty().containsKey(clock)) {
+                throw new StaException("DUPLICATE_DEFINITION", src, line,
+                        "时钟不确定度重复声明: " + clock);
+            }
+            c.clockUncertainty().put(clock, value);
+        } else if (t.length == 6 && t[2].equals("-from") && t[4].equals("-to")) {
+            rule = Constraints.UncertaintyRule.path(t[3], t[5], value);
+            for (Constraints.UncertaintyRule existing : c.pathUncertainty()) {
+                if (existing.from().equals(rule.from()) && existing.to().equals(rule.to())) {
+                    throw new StaException("DUPLICATE_DEFINITION", src, line,
+                            "路径级时钟不确定度重复声明: -from " + rule.from() + " -to " + rule.to());
+                }
+            }
+            c.pathUncertainty().add(rule);
+        } else {
+            throw new StaException("SYNTAX_ERROR", src, line,
+                    "用法: set_clock_uncertainty <值> | <值> [get_clocks <时钟>] | <值> -from <起点> -to <终点>");
+        }
+    }
+
+    private void parseDerate(String[] t, Constraints c, String src, int line) {
+        Double early = null;
+        Double late = null;
+        Double bare = null;
+        String scope = "GLOBAL";
+        String target = null;
+        for (int i = 1; i < t.length; i++) {
+            String tok = t[i];
+            switch (tok) {
+                case "-early" -> {
+                    if (i + 1 >= t.length || early != null) {
+                        throw derateSyntax(src, line);
+                    }
+                    early = positiveFactor(t[++i], src, line);
+                }
+                case "-late" -> {
+                    if (i + 1 >= t.length || late != null) {
+                        throw derateSyntax(src, line);
+                    }
+                    late = positiveFactor(t[++i], src, line);
+                }
+                case "-cell" -> {
+                    if (i + 1 >= t.length || !"GLOBAL".equals(scope)) {
+                        throw derateSyntax(src, line);
+                    }
+                    scope = "CELL";
+                    target = t[++i];
+                }
+                case "-instance" -> {
+                    if (i + 1 >= t.length || !"GLOBAL".equals(scope)) {
+                        throw derateSyntax(src, line);
+                    }
+                    scope = "INSTANCE";
+                    target = t[++i];
+                }
+                default -> {
+                    if (tok.startsWith("-") || bare != null) {
+                        throw derateSyntax(src, line);
+                    }
+                    bare = positiveFactor(tok, src, line);
+                }
+            }
+        }
+        if (bare != null && (early != null || late != null)) {
+            throw new StaException("SYNTAX_ERROR", src, line,
+                    "单个裸系数表示早晚相同，不能再与 -early/-late 混用");
+        }
+        double earlyFactor;
+        double lateFactor;
+        if (bare != null) {
+            earlyFactor = bare;
+            lateFactor = bare;
+        } else {
+            if (early == null && late == null) {
+                throw derateSyntax(src, line);
+            }
+            earlyFactor = early != null ? early : late;
+            lateFactor = late != null ? late : early;
+        }
+        Constraints.DerateRule rule = new Constraints.DerateRule(scope, target, earlyFactor, lateFactor);
+        for (Constraints.DerateRule existing : c.derates()) {
+            if (existing.key().equals(rule.key())) {
+                throw new StaException("DUPLICATE_DEFINITION", src, line,
+                        "时序降额重复声明: " + scope + (target != null ? " " + target : "")
+                                + "（早晚角必须在同一条声明中给出）");
+            }
+        }
+        c.derates().add(rule);
+    }
+
+    private StaException derateSyntax(String src, int line) {
+        return new StaException("SYNTAX_ERROR", src, line,
+                "用法: set_timing_derate <系数> | -early <系数> [-late <系数>] [-cell <单元类型> | -instance <实例名>]");
+    }
+
+    private double positiveFactor(String s, String src, int line) {
+        double v = LineReader.number(s, src, line);
+        if (!(v > 0)) {
+            throw new StaException("VALUE_INVALID", src, line, "降额系数必须是大于 0 的有限数: " + s);
+        }
+        return v;
     }
 
     private void parseClock(String[] t, Constraints c, String src, int line, String raw) {

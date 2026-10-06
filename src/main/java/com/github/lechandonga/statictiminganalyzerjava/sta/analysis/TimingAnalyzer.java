@@ -49,6 +49,7 @@ public class TimingAnalyzer {
         validateReferences();
         propagateClocks();
         buildDataGraph();
+        validateNewConstraintRefs();
 
         List<List<String>> cycles = findCycles();
         if (!cycles.isEmpty()) {
@@ -75,7 +76,8 @@ public class TimingAnalyzer {
         List<String> starts = new ArrayList<>(startpoints);
         Collections.sort(starts);
         for (String start : starts) {
-            analyzeFromStartpoint(start, topo, byEndpoint);
+            analyzeFromStartpoint(start, topo, byEndpoint, false);
+            analyzeFromStartpoint(start, topo, byEndpoint, true);
         }
         TimingReport report = new TimingReport();
         List<TimingReport.EndpointResult> ers = new ArrayList<>(byEndpoint.values());
@@ -129,6 +131,40 @@ public class TimingAnalyzer {
             validateExceptionRef(rule.from(), pinNames);
             validateExceptionRef(rule.to(), pinNames);
         }
+    }
+
+    /** 不确定度与降额的引用在三份文件全部解析后统一校验，结论与声明顺序无关。 */
+    private void validateNewConstraintRefs() {
+        for (Constraints.UncertaintyRule u : constraints.pathUncertainty()) {
+            validateExceptionRef(u.from());
+            validateExceptionRef(u.to());
+        }
+        for (String clock : constraints.clockUncertainty().keySet()) {
+            if (!constraints.clocks().containsKey(clock)) {
+                throw new StaException("UNCERTAINTY_CLOCK_NOT_FOUND", "constraints", 0,
+                        "set_clock_uncertainty 引用了未定义时钟: " + clock);
+            }
+        }
+        for (Constraints.DerateRule d : constraints.derates()) {
+            if ("CELL".equals(d.scope) && !lib.cells().containsKey(d.target)) {
+                throw new StaException("DERATE_CELL_NOT_FOUND", "constraints", 0,
+                        "set_timing_derate -cell 引用了库中不存在的单元类型: " + d.target);
+            }
+            if ("INSTANCE".equals(d.scope) && !netlist.instances().containsKey(d.target)) {
+                throw new StaException("DERATE_INSTANCE_NOT_FOUND", "constraints", 0,
+                        "set_timing_derate -instance 引用了网表中不存在的实例: " + d.target);
+            }
+        }
+    }
+
+    private void validateExceptionRef(String ref) {
+        Set<String> pinNames = new HashSet<>();
+        for (Netlist.Instance inst : netlist.instances().values()) {
+            for (String pin : inst.pinNet.keySet()) {
+                pinNames.add(inst.name + "/" + pin);
+            }
+        }
+        validateExceptionRef(ref, pinNames);
     }
 
     private void validateExceptionRef(String ref, Set<String> pins) {
@@ -401,11 +437,15 @@ public class TimingAnalyzer {
     // ---------------------------------------------------------------
 
     private void analyzeFromStartpoint(String start, List<String> topo,
-                                       Map<String, TimingReport.EndpointResult> byEndpoint) {
+                                       Map<String, TimingReport.EndpointResult> byEndpoint,
+                                       boolean early) {
         Map<String, Double> arrival = new HashMap<>();
         Map<String, String> predecessor = new HashMap<>();
+        Map<String, String> factorTag = new HashMap<>();
         StartInfo si = startInfo(start);
-        arrival.put(start, si.arrival);
+        double startFactor = startDerateFactor(start, early);
+        arrival.put(start, si.arrival * startFactor);
+        factorTag.put(start, factorDescription(startCellName(start), startCellType(start), startFactor, early));
         for (String node : topo) {
             if (!arrival.containsKey(node)) {
                 continue;
@@ -415,13 +455,19 @@ public class TimingAnalyzer {
             }
             double at = arrival.get(node);
             for (Arc a : dataGraph.getOrDefault(node, List.of())) {
-                double cand = at + a.delay();
+                double factor = a.cell() == null ? 1.0 : cellFactor(a.cell(), early);
+                double cand = at + a.delay() * factor;
                 Double old = arrival.get(a.target());
-                if (old == null || cand > old + EPS
-                        || (Math.abs(cand - old) <= EPS
-                        && betterPredecessor(a.target(), node, predecessor))) {
+                boolean better = old != null && (early ? cand < old - EPS : cand > old + EPS);
+                boolean tie = old != null && Math.abs(cand - old) <= EPS;
+                if (old == null || better
+                        || (tie && betterPredecessor(a.target(), node, predecessor))) {
                     arrival.put(a.target(), cand);
                     predecessor.put(a.target(), node);
+                    factorTag.put(a.target(), a.cell() != null
+                            ? factorDescription(a.cell(), netlist.instances().get(a.cell()).cellType,
+                            factor, early)
+                            : "(net)*1.000");
                 }
             }
         }
@@ -432,9 +478,57 @@ public class TimingAnalyzer {
             if (at == null) {
                 continue;
             }
-            TimingReport.PathPair pair = buildPair(start, si, ep, at, predecessor);
-            byEndpoint.get(ep).pairs.add(pair);
+            TimingReport.PathPair pair = obtainPair(byEndpoint.get(ep), start, ep);
+            List<String> path = tracePath(start, ep, predecessor);
+            List<String> derates = collectDerates(start, ep, predecessor, factorTag);
+            if (early) {
+                pair.holdArrival = round(at);
+                pair.holdDataPath = path;
+                pair.holdDerates = derates;
+            } else {
+                pair.arrival = round(at);
+                pair.dataPath = path;
+                pair.setupDerates = derates;
+            }
         }
+    }
+
+    /** 同一 (起点, 终点) 的晚角/早角两次传播共享同一条 PathPair。 */
+    private TimingReport.PathPair obtainPair(TimingReport.EndpointResult er, String start, String endpoint) {
+        String shownStart = display(start);
+        for (TimingReport.PathPair existing : er.pairs) {
+            if (existing.startpoint.equals(shownStart)) {
+                return existing;
+            }
+        }
+        TimingReport.PathPair pair = new TimingReport.PathPair();
+        pair.startpoint = shownStart;
+        StartInfo si = startInfo(start);
+        pair.launchClock = si.launchClock;
+        pair.captureClock = endpointInfo(endpoint).captureClock;
+        classifyAndCheckPair(pair, start, si, endpoint);
+        er.pairs.add(pair);
+        return pair;
+    }
+
+    private List<String> collectDerates(String start, String endpoint, Map<String, String> pred,
+                                        Map<String, String> factorTag) {
+        LinkedHashSet<String> ordered = new LinkedHashSet<>();
+        String startTag = factorTag.get(start);
+        if (startTag != null) {
+            ordered.add(startTag);
+        }
+        String cur = endpoint;
+        while (cur != null && !cur.equals(start)) {
+            String tag = factorTag.get(cur);
+            if (tag != null && !tag.startsWith("(net)")) {
+                ordered.add(tag);
+            }
+            cur = pred.get(cur);
+        }
+        List<String> result = new ArrayList<>(ordered);
+        Collections.sort(result);
+        return result;
     }
 
     private boolean betterPredecessor(String target, String candidateNode,
@@ -460,33 +554,167 @@ public class TimingAnalyzer {
         return new StartInfo(clockDomain.get(pinNode(ip[0], ct.clkPin)), ct.clkToQ);
     }
 
-    private TimingReport.PathPair buildPair(String start, StartInfo si, String endpoint,
-                                            double arrival, Map<String, String> pred) {
-        TimingReport.PathPair pair = new TimingReport.PathPair();
-        pair.startpoint = display(start);
-        pair.launchClock = si.launchClock;
-        pair.arrival = round(arrival);
-        pair.dataPath = tracePath(start, endpoint, pred);
+    private String startCellName(String node) {
+        return node.startsWith("port:") ? null : splitPinNode(node)[0];
+    }
 
+    private String startCellType(String node) {
+        return node.startsWith("port:") ? null
+                : netlist.instances().get(splitPinNode(node)[0]).cellType;
+    }
+
+    // ---------------------------------------------------------------
+    // 时序降额：实例覆盖单元、单元覆盖全局；早/晚角独立，缺角用另一角
+    // ---------------------------------------------------------------
+
+    private double cellFactor(String instName, boolean early) {
+        String cellType = netlist.instances().get(instName).cellType;
+        double global = 1.0;
+        double byCell = Double.NaN;
+        double byInstance = Double.NaN;
+        for (Constraints.DerateRule d : constraints.derates()) {
+            double f = early ? d.earlyFactor : d.lateFactor;
+            switch (d.scope) {
+                case "GLOBAL" -> global = f;
+                case "CELL" -> {
+                    if (d.target.equals(cellType)) {
+                        byCell = f;
+                    }
+                }
+                default -> {
+                    if (d.target.equals(instName)) {
+                        byInstance = f;
+                    }
+                }
+            }
+        }
+        if (!Double.isNaN(byInstance)) {
+            return byInstance;
+        }
+        if (!Double.isNaN(byCell)) {
+            return byCell;
+        }
+        return global;
+    }
+
+    /** 起点降额：仅寄存器 Q 脚的 clk->q 跟随对应角；主输入的 input delay 是片外数据，不降额。 */
+    private double startDerateFactor(String node, boolean early) {
+        return node.startsWith("port:") ? 1.0 : cellFactor(splitPinNode(node)[0], early);
+    }
+
+    private String factorDescription(String instName, String cellType, double factor, boolean early) {
+        if (instName == null) {
+            // input delay 属片外数据，不参与降额；标签固定为 1.000(unrated)，不显示 global。
+            return String.format(java.util.Locale.ROOT,
+                    "(input_port)*1.000(%s:unrated)", early ? "early" : "late");
+        }
+        String scope = "global";
+        String key = null;
+        for (Constraints.DerateRule d : constraints.derates()) {
+            switch (d.scope) {
+                case "GLOBAL" -> {
+                    key = null;
+                    scope = "global";
+                }
+                case "CELL" -> {
+                    if (d.target.equals(cellType)) {
+                        key = d.target;
+                        scope = "cell";
+                    }
+                }
+                default -> {
+                    if (d.target.equals(instName)) {
+                        key = d.target;
+                        scope = "instance";
+                    }
+                }
+            }
+        }
+        String who = instName + "[" + cellType + "]";
+        return String.format(java.util.Locale.ROOT, "%s*%.3f(%s:%s%s)",
+                who, factor, early ? "early" : "late", scope, key != null ? ":" + key : "");
+    }
+
+    // ---------------------------------------------------------------
+    // 时钟不确定度：路径级 > 时钟级 > 全局；同粒度冲突确定性报错
+    // ---------------------------------------------------------------
+
+    private record UncertaintyDecision(double value, String source) {
+    }
+
+    private UncertaintyDecision decideUncertainty(String launchClock, String start,
+                                                  String captureClock, String endpoint) {
+        List<Constraints.UncertaintyRule> applicable = new ArrayList<>();
+        Map<Constraints.UncertaintyRule, int[]> specs = new HashMap<>();
+        for (Constraints.UncertaintyRule r : constraints.pathUncertainty()) {
+            int fs = refMatch(r.from(), launchClock, start);
+            int ts = refMatch(r.to(), captureClock, endpoint);
+            if (fs > 0 && ts > 0) {
+                applicable.add(r);
+                specs.put(r, new int[]{fs, ts});
+            }
+        }
+        if (!applicable.isEmpty()) {
+            int maxFrom = applicable.stream().mapToInt(r -> specs.get(r)[0]).max().orElse(0);
+            int maxTo = applicable.stream().mapToInt(r -> specs.get(r)[1]).max().orElse(0);
+            List<Constraints.UncertaintyRule> best = applicable.stream()
+                    .filter(r -> specs.get(r)[0] == maxFrom && specs.get(r)[1] == maxTo)
+                    .sorted(Comparator.comparing(Constraints.UncertaintyRule::from)
+                            .thenComparing(Constraints.UncertaintyRule::to))
+                    .toList();
+            long distinct = best.stream()
+                    .mapToDouble(Constraints.UncertaintyRule::valueNs).distinct().count();
+            if (distinct > 1) {
+                Constraints.UncertaintyRule first = best.get(0);
+                throw new StaException("UNCERTAINTY_CONFLICT", "constraints", 0,
+                        "同粒度的多条路径级 set_clock_uncertainty 作用于同一条路径且取值不同: "
+                                + first.from() + " -> " + first.to());
+            }
+            Constraints.UncertaintyRule chosen = best.get(0);
+            return new UncertaintyDecision(chosen.valueNs(),
+                    "path(" + chosen.from() + "->" + chosen.to() + ")");
+        }
+        double clockValue = Double.NaN;
+        Set<String> owners = new LinkedHashSet<>();
+        for (String clk : List.of(launchClock, captureClock)) {
+            if (clk != null && constraints.clockUncertainty().containsKey(clk)) {
+                double v = constraints.clockUncertainty().get(clk);
+                if (Double.isNaN(clockValue) || v > clockValue) {
+                    clockValue = v;
+                }
+                owners.add(clk);
+            }
+        }
+        if (!Double.isNaN(clockValue)) {
+            return new UncertaintyDecision(clockValue,
+                    "clock(" + String.join(",", new java.util.TreeSet<>(owners)) + ")");
+        }
+        if (constraints.globalUncertainty() != null) {
+            return new UncertaintyDecision(constraints.globalUncertainty(), "global");
+        }
+        return new UncertaintyDecision(0, "(none)");
+    }
+
+    private void classifyAndCheckPair(TimingReport.PathPair pair, String start,
+                                      StartInfo si, String endpoint) {
         ExceptionDecision ex = decideException(si.launchClock, start, endpoint);
         EndpointInfo ei = endpointInfo(endpoint);
-        pair.captureClock = ei.captureClock;
 
         if (ex.rule != null && "FALSE_PATH".equals(ex.rule.kind())) {
             pair.category = TimingReport.PairCategory.FALSE_PATH;
             pair.exception = "FALSE_PATH" + ex.matchedBy;
-            return pair;
+            return;
         }
 
         boolean cdc = si.launchClock != null && ei.captureClock != null
                 && !si.launchClock.equals(ei.captureClock);
         if (cdc && (ex.rule == null || !"MULTICYCLE".equals(ex.rule.kind()))) {
             pair.category = TimingReport.PairCategory.CDC;
-            return pair;
+            return;
         }
         if (si.launchClock == null || ei.captureClock == null) {
             pair.category = TimingReport.PairCategory.UNCONSTRAINED;
-            return pair;
+            return;
         }
 
         pair.category = TimingReport.PairCategory.CONSTRAINED;
@@ -499,20 +727,30 @@ public class TimingAnalyzer {
             nHold = ex.rule.multiplier() - 1;
             pair.exception = "MULTICYCLE x" + ex.rule.multiplier() + ex.matchedBy;
         }
+        UncertaintyDecision uSetup = decideUncertainty(si.launchClock, start,
+                ei.captureClock, endpoint);
+        // 保持与建立使用同一份生效不确定度，但落点方向相反（setup 扣减、hold 加回）。
+        pair.setupUncertainty = round(uSetup.value);
+        pair.holdUncertainty = round(uSetup.value);
+        pair.setupUncertaintySource = uSetup.source;
+        pair.holdUncertaintySource = uSetup.source;
         double setupRequired;
         double holdRequired;
         if (cdc) {
-            setupRequired = nSetup * capture.periodNs - ei.extraDelay - ei.setupTime;
-            holdRequired = -(double) nHold * capture.periodNs + ei.extraDelay - ei.holdTime;
+            setupRequired = nSetup * capture.periodNs - ei.extraDelay - ei.setupTime
+                    - uSetup.value;
+            holdRequired = (double) nHold * capture.periodNs + ei.extraDelay + ei.holdTime
+                    + uSetup.value;
         } else {
-            setupRequired = nSetup * launch.periodNs - ei.extraDelay - ei.setupTime;
-            holdRequired = (double) nHold * launch.periodNs + ei.extraDelay - ei.holdTime;
+            setupRequired = nSetup * launch.periodNs - ei.extraDelay - ei.setupTime
+                    - uSetup.value;
+            holdRequired = (double) nHold * launch.periodNs + ei.extraDelay + ei.holdTime
+                    + uSetup.value;
         }
         pair.setupRequired = round(setupRequired);
         pair.holdRequired = round(holdRequired);
-        pair.setupSlack = round(setupRequired - arrival);
-        pair.holdSlack = round(arrival - holdRequired);
-        return pair;
+        pair.setupSlack = null;
+        pair.holdSlack = null;
     }
 
     private record EndpointInfo(String captureClock, double extraDelay, double setupTime, double holdTime) {
@@ -630,6 +868,14 @@ public class TimingAnalyzer {
     // ---------------------------------------------------------------
 
     private void finalizeEndpoint(TimingReport.EndpointResult er) {
+        for (TimingReport.PathPair p : er.pairs) {
+            if (p.category != TimingReport.PairCategory.CONSTRAINED) {
+                continue;
+            }
+            // 双角传播均完成后统一结算：晚角 arrival 对建立，早角 arrival 对保持。
+            p.setupSlack = round(p.setupRequired - p.arrival);
+            p.holdSlack = round(p.holdArrival - p.holdRequired);
+        }
         List<TimingReport.PathPair> constrained = er.pairs.stream()
                 .filter(p -> p.category == TimingReport.PairCategory.CONSTRAINED).toList();
         int falsePaths = 0;
@@ -653,11 +899,14 @@ public class TimingAnalyzer {
                             .thenComparing(p -> p.startpoint)).orElseThrow();
             er.worstSetupSlack = worstSetup.setupSlack;
             er.worstHoldSlack = worstHold.holdSlack;
+            er.worstSetupPair = worstSetup;
+            er.worstHoldPair = worstHold;
             er.worstSetupPath = worstSetup.dataPath;
-            er.worstHoldPath = worstHold.dataPath;
+            er.worstHoldPath = worstHold.holdDataPath;
             boolean sv = worstSetup.setupSlack < -EPS;
             boolean hv = worstHold.holdSlack < -EPS;
-            er.status = sv ? TimingReport.EndpointStatus.SETUP_VIOLATED
+            er.status = sv && hv ? TimingReport.EndpointStatus.SETUP_AND_HOLD_VIOLATED
+                    : sv ? TimingReport.EndpointStatus.SETUP_VIOLATED
                     : hv ? TimingReport.EndpointStatus.HOLD_VIOLATED
                     : TimingReport.EndpointStatus.MET;
         } else if (cdcPairs > 0 && uncovered == 0) {
@@ -684,12 +933,26 @@ public class TimingAnalyzer {
         s.worstHoldSlack = Double.POSITIVE_INFINITY;
         for (TimingReport.EndpointResult er : report.endpoints) {
             s.totalEndpoints++;
+            boolean holdViolated = false;
             switch (er.status) {
-                case SETUP_VIOLATED -> s.setupViolations++;
-                case HOLD_VIOLATED -> s.holdViolations++;
+                case SETUP_VIOLATED -> {
+                    s.setupViolations++;
+                }
+                case HOLD_VIOLATED -> {
+                    s.holdViolations++;
+                    holdViolated = true;
+                }
+                case SETUP_AND_HOLD_VIOLATED -> {
+                    s.setupViolations++;
+                    s.holdViolations++;
+                    holdViolated = true;
+                }
                 case MET -> s.met++;
                 case UNCONSTRAINED -> s.unconstrained++;
                 case CDC -> s.cdc++;
+            }
+            if (holdViolated) {
+                report.holdViolations.add(er);
             }
             for (TimingReport.PathPair p : er.pairs) {
                 if (p.category == TimingReport.PairCategory.FALSE_PATH) {
@@ -711,6 +974,9 @@ public class TimingAnalyzer {
                 s.worstHoldEndpoint = er.endpoint;
             }
         }
+        report.holdViolations.sort(Comparator
+                .comparingDouble((TimingReport.EndpointResult er) -> er.worstHoldSlack)
+                .thenComparing(er -> er.endpoint));
         if (s.worstSetupEndpoint == null) {
             s.worstSetupSlack = 0;
             s.worstHoldSlack = 0;

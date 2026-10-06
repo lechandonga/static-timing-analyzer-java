@@ -1,0 +1,12 @@
+input CLK
+input IN1
+inst U1 DFF
+  pin D IN1
+  pin CK CLK
+  pin Q N1
+endinst
+inst U2 DFF
+  pin D N1
+  pin CK CLK
+  pin Q N2
+endinst

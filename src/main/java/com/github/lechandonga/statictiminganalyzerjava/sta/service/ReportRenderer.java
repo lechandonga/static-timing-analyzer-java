@@ -2,6 +2,7 @@ package com.github.lechandonga.statictiminganalyzerjava.sta.service;
 
 import com.github.lechandonga.statictiminganalyzerjava.sta.analysis.TimingReport;
 
+import java.util.List;
 import java.util.Locale;
 
 /** 将 TimingReport 渲染为确定性的纯文本报告。 */
@@ -36,15 +37,22 @@ public final class ReportRenderer {
                     s.worstHoldSlack, s.worstHoldEndpoint));
         }
         sb.append("----------------------------------------------------------------\n");
+        sb.append("保持违例端点清单（").append(r.holdViolations.size()).append(" 个，按保持 slack 升序）:\n");
+        for (TimingReport.EndpointResult hv : r.holdViolations) {
+            sb.append(String.format(Locale.ROOT,
+                    "  * hold slack=%.3f ns  端点 %s  单元 %s  违例引脚 %s%n",
+                    hv.worstHoldSlack, hv.endpoint, hv.cell,
+                    hv.worstHoldPair != null && !hv.worstHoldPair.holdDataPath.isEmpty()
+                            ? hv.worstHoldPair.holdDataPath.get(hv.worstHoldPair.holdDataPath.size() - 1)
+                            : hv.endpoint));
+        }
+        sb.append("----------------------------------------------------------------\n");
         for (TimingReport.EndpointResult ep : r.endpoints) {
             sb.append("端点 ").append(ep.endpoint).append("  单元: ").append(ep.cell)
                     .append("  结论: ").append(ep.status).append('\n');
             if (ep.worstSetupSlack != null) {
-                sb.append(String.format(Locale.ROOT,
-                        "  setup slack=%.3f ns, hold slack=%.3f ns%n",
-                        ep.worstSetupSlack, ep.worstHoldSlack));
-                sb.append("  最差 setup 路径: ").append(String.join(" -> ", ep.worstSetupPath)).append('\n');
-                sb.append("  最差 hold  路径: ").append(String.join(" -> ", ep.worstHoldPath)).append('\n');
+                renderWorst(sb, "setup", ep, ep.worstSetupPair);
+                renderWorst(sb, "hold ", ep, ep.worstHoldPair);
             }
             if (!ep.note.isEmpty()) {
                 sb.append("  备注: ").append(ep.note).append('\n');
@@ -69,5 +77,29 @@ public final class ReportRenderer {
         }
         sb.append("==============================================================\n");
         return sb.toString();
+    }
+
+    private static void renderWorst(StringBuilder sb, String label,
+                                    TimingReport.EndpointResult ep, TimingReport.PathPair p) {
+        if (p == null) {
+            return;
+        }
+        boolean setup = label.startsWith("setup");
+        List<String> derates = setup ? p.setupDerates : p.holdDerates;
+        double arrival = setup ? p.arrival : p.holdArrival;
+        double required = setup ? p.setupRequired : p.holdRequired;
+        double slack = setup ? p.setupSlack : p.holdSlack;
+        double uncertainty = setup ? p.setupUncertainty : p.holdUncertainty;
+        String uSource = setup ? p.setupUncertaintySource : p.holdUncertaintySource;
+        List<String> path = setup ? p.dataPath : p.holdDataPath;
+        sb.append(String.format(Locale.ROOT,
+                "  最差 %s: 起点 %s  时钟 %s=>%s  arrival=%.3f required=%.3f slack=%.3f%n",
+                label, p.startpoint, p.launchClock, p.captureClock, arrival, required, slack));
+        sb.append("    路径: ").append(String.join(" -> ", path)).append('\n');
+        sb.append(String.format(Locale.ROOT,
+                "    不确定度=%.3f ns[%s]  降额: %s%n",
+                uncertainty, uSource,
+                derates.isEmpty() ? "(无生效降额)" : String.join(" ; ", derates)));
+        sb.append("    例外: ").append(p.exception != null ? p.exception : "(无)").append('\n');
     }
 }

@@ -37,6 +37,7 @@ public class StaController {
                 "status", report.status.name(),
                 "summary", report.summary,
                 "endpoints", report.endpoints,
+                "holdViolations", report.holdViolations,
                 "cycles", report.cycles,
                 "text", ReportRenderer.render(report));
     }

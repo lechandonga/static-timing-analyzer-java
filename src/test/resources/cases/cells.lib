@@ -27,3 +27,9 @@ cell DFF seq
   pin Q seq_out
   timing setup=0.05 hold=0.02 clk_to_q=0.08
 endcell
+cell DFFH seq
+  pin D seq_in
+  pin CK clk
+  pin Q seq_out
+  timing setup=0.05 hold=0.50 clk_to_q=0.02
+endcell
