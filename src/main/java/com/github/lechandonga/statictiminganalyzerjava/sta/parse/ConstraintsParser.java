@@ -17,6 +17,12 @@ import java.util.Set;
  * set_output_delay 0.5 -clock CLK [get_ports OUT1]
  * set_false_path -from CLK -to U2/D
  * set_multicycle_path 2 -from CLK -to U3/D
+ * set_clock_uncertainty 0.05 -setup                 // 全局
+ * set_clock_uncertainty 0.02 -hold -clock CLK       // 指定时钟
+ * set_clock_uncertainty 0.10 -setup -from CLK -to U6/D  // 指定路径
+ * set_timing_derate 0.95 -early                     // 全局
+ * set_timing_derate 1.10 -late -cell_type BUF2      // 按单元类型
+ * set_timing_derate 0.90 -early -instance U2        // 按实例
  * </pre>
  */
 public class ConstraintsParser {
@@ -26,6 +32,8 @@ public class ConstraintsParser {
         List<LineReader.RawLine> lines = LineReader.read(file);
         Constraints c = new Constraints();
         Set<String> exceptionKeys = new HashSet<>();
+        Set<String> uncertaintyKeys = new HashSet<>();
+        Set<String> derateKeys = new HashSet<>();
 
         for (LineReader.RawLine rl : lines) {
             String s = rl.text();
@@ -36,10 +44,118 @@ public class ConstraintsParser {
                 case "set_output_delay" -> parseIoDelay(t, c, false, src, rl.number());
                 case "set_false_path" -> parseException(t, c, exceptionKeys, "FALSE_PATH", src, rl.number());
                 case "set_multicycle_path" -> parseMultiCycle(t, c, exceptionKeys, src, rl.number());
+                case "set_clock_uncertainty" -> parseUncertainty(t, c, uncertaintyKeys, src, rl.number());
+                case "set_timing_derate" -> parseDerate(t, c, derateKeys, src, rl.number());
                 default -> throw new StaException("SYNTAX_ERROR", src, rl.number(), "未知约束命令: " + t[0]);
             }
         }
         return c;
+    }
+
+    private void parseUncertainty(String[] t, Constraints c, Set<String> keys, String src, int line) {
+        if (t.length < 2) {
+            throw new StaException("SYNTAX_ERROR", src, line,
+                    "用法: set_clock_uncertainty <值> [-setup|-hold] [-clock <时钟> | -from <引用> -to <引用>]");
+        }
+        double value = dedicatedNumber(t[1], "UNCERTAINTY_INVALID", "时钟不确定度", src, line);
+        String corner = null;
+        String clock = null;
+        String from = null;
+        String to = null;
+        int i = 2;
+        while (i < t.length) {
+            switch (t[i]) {
+                case "-setup", "-hold" -> {
+                    if (corner != null) {
+                        throw new StaException("SYNTAX_ERROR", src, line, "-setup/-hold 只能出现一次");
+                    }
+                    corner = t[i].substring(1).toUpperCase();
+                    i++;
+                }
+                case "-clock" -> {
+                    if (clock != null || from != null || to != null || i + 1 >= t.length) {
+                        throw new StaException("SYNTAX_ERROR", src, line,
+                                "-clock 与 -from/-to 互斥，且各只能出现一次");
+                    }
+                    clock = t[i + 1];
+                    i += 2;
+                }
+                case "-from" -> {
+                    if (clock != null || from != null || i + 1 >= t.length) {
+                        throw new StaException("SYNTAX_ERROR", src, line, "-from 非法或重复");
+                    }
+                    from = t[i + 1];
+                    i += 2;
+                }
+                case "-to" -> {
+                    if (clock != null || to != null || i + 1 >= t.length) {
+                        throw new StaException("SYNTAX_ERROR", src, line, "-to 非法或重复");
+                    }
+                    to = t[i + 1];
+                    i += 2;
+                }
+                default -> throw new StaException("SYNTAX_ERROR", src, line,
+                        "set_clock_uncertainty 无法识别的参数: " + t[i]);
+            }
+        }
+        if ((from == null) != (to == null)) {
+            throw new StaException("SYNTAX_ERROR", src, line, "路径级不确定度必须同时给出 -from 与 -to");
+        }
+        String scope = from != null ? "PATH" : clock != null ? "CLOCK" : "GLOBAL";
+        for (String cn : corner != null ? new String[]{corner} : new String[]{"SETUP", "HOLD"}) {
+            Constraints.UncertaintyRule rule =
+                    new Constraints.UncertaintyRule(cn, scope, clock, from, to, value);
+            if (!keys.add(rule.key())) {
+                throw new StaException("UNCERTAINTY_DUPLICATE", src, line,
+                        "重复的不确定度声明: " + rule.key());
+            }
+            c.uncertainties().add(rule);
+        }
+    }
+
+    private void parseDerate(String[] t, Constraints c, Set<String> keys, String src, int line) {
+        if (t.length < 2) {
+            throw new StaException("SYNTAX_ERROR", src, line,
+                    "用法: set_timing_derate <系数> [-early|-late] [-cell_type <类型> | -instance <实例>]");
+        }
+        double factor = dedicatedNumber(t[1], "DERATE_INVALID", "降额系数", src, line);
+        if (factor == 0) {
+            throw new StaException("DERATE_INVALID", src, line, "降额系数必须为正数: " + t[1]);
+        }
+        String corner = null;
+        String scope = "GLOBAL";
+        String target = null;
+        int i = 2;
+        while (i < t.length) {
+            switch (t[i]) {
+                case "-early", "-late" -> {
+                    if (corner != null) {
+                        throw new StaException("SYNTAX_ERROR", src, line, "-early/-late 只能出现一次");
+                    }
+                    corner = t[i].substring(1).toUpperCase();
+                    i++;
+                }
+                case "-cell_type", "-instance" -> {
+                    if (target != null || i + 1 >= t.length) {
+                        throw new StaException("SYNTAX_ERROR", src, line,
+                                "-cell_type 与 -instance 互斥，且只能出现一次");
+                    }
+                    scope = t[i].equals("-cell_type") ? "CELL_TYPE" : "INSTANCE";
+                    target = t[i + 1];
+                    i += 2;
+                }
+                default -> throw new StaException("SYNTAX_ERROR", src, line,
+                        "set_timing_derate 无法识别的参数: " + t[i]);
+            }
+        }
+        for (String cn : corner != null ? new String[]{corner} : new String[]{"EARLY", "LATE"}) {
+            Constraints.DerateRule rule = new Constraints.DerateRule(cn, scope, target, factor);
+            if (!keys.add(rule.key())) {
+                throw new StaException("DERATE_DUPLICATE", src, line,
+                        "重复的降额声明: " + rule.key());
+            }
+            c.derates().add(rule);
+        }
     }
 
     private void parseClock(String[] t, Constraints c, String src, int line, String raw) {
@@ -144,5 +260,19 @@ public class ConstraintsParser {
                     "多周期路径重复声明: -from " + from + " -to " + to);
         }
         c.exceptions().add(rule);
+    }
+
+    /** 解析数值并以专用错误码失败，保证失败原因可与其它非法输入区分。 */
+    private static double dedicatedNumber(String s, String code, String what, String src, int line) {
+        double v;
+        try {
+            v = Double.parseDouble(s);
+        } catch (NumberFormatException e) {
+            throw new StaException(code, src, line, what + "数值非法: " + s);
+        }
+        if (!Double.isFinite(v) || v < 0) {
+            throw new StaException(code, src, line, what + "必须是非负有限数: " + s);
+        }
+        return v;
     }
 }

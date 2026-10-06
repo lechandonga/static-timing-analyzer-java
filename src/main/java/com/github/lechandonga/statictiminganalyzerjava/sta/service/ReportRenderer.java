@@ -35,6 +35,9 @@ public final class ReportRenderer {
                     s.worstSetupSlack, s.worstSetupEndpoint,
                     s.worstHoldSlack, s.worstHoldEndpoint));
         }
+        if (!s.holdViolationEndpoints.isEmpty()) {
+            sb.append("保持违例端点: ").append(String.join(", ", s.holdViolationEndpoints)).append('\n');
+        }
         sb.append("----------------------------------------------------------------\n");
         for (TimingReport.EndpointResult ep : r.endpoints) {
             sb.append("端点 ").append(ep.endpoint).append("  单元: ").append(ep.cell)
@@ -45,6 +48,8 @@ public final class ReportRenderer {
                         ep.worstSetupSlack, ep.worstHoldSlack));
                 sb.append("  最差 setup 路径: ").append(String.join(" -> ", ep.worstSetupPath)).append('\n');
                 sb.append("  最差 hold  路径: ").append(String.join(" -> ", ep.worstHoldPath)).append('\n');
+                renderWorst(sb, "setup", ep.worstSetup);
+                renderWorst(sb, "hold ", ep.worstHold);
             }
             if (!ep.note.isEmpty()) {
                 sb.append("  备注: ").append(ep.note).append('\n');
@@ -69,5 +74,23 @@ public final class ReportRenderer {
         }
         sb.append("==============================================================\n");
         return sb.toString();
+    }
+
+    private static void renderWorst(StringBuilder sb, String tag, TimingReport.PathPair p) {
+        if (p == null) {
+            return;
+        }
+        double arrival = tag.startsWith("setup") ? p.arrival : p.earlyArrival;
+        double required = tag.startsWith("setup") ? p.setupRequired : p.holdRequired;
+        double slack = tag.startsWith("setup") ? p.setupSlack : p.holdSlack;
+        double unc = tag.startsWith("setup") ? p.setupUncertainty : p.holdUncertainty;
+        String derate = tag.startsWith("setup") ? p.derateLate : p.derateEarly;
+        sb.append(String.format(Locale.ROOT,
+                "  最差 %s 路径对: %s -> 到达=%.3f 要求=%.3f 裕量=%.3f 不确定度=%.3f%n",
+                tag.trim(), p.startpoint, arrival, required, slack, unc));
+        sb.append("    降额: ").append(derate).append('\n');
+        if (p.exception != null) {
+            sb.append("    例外: ").append(p.exception).append('\n');
+        }
     }
 }

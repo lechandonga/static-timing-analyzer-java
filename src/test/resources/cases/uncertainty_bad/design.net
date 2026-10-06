@@ -1,0 +1,21 @@
+input CLK
+input IN1
+output OUT1
+inst U1 DFF
+  pin D IN1
+  pin CK CLK
+  pin Q N1
+endinst
+inst U2 BUF
+  pin A N1
+  pin Y N2
+endinst
+inst U3 DFF
+  pin D N2
+  pin CK CLK
+  pin Q N3
+endinst
+inst U4 INV
+  pin A N3
+  pin Y OUT1
+endinst

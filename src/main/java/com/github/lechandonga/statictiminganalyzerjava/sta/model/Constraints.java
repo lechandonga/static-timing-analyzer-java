@@ -65,6 +65,8 @@ public class Constraints {
     /** 主输出名 -> 输出延时。 */
     private final Map<String, IoDelay> outputDelays = new LinkedHashMap<>();
     private final List<ExceptionRule> exceptions = new ArrayList<>();
+    private final List<UncertaintyRule> uncertainties = new ArrayList<>();
+    private final List<DerateRule> derates = new ArrayList<>();
 
     public Map<String, Clock> clocks() {
         return clocks;
@@ -80,5 +82,64 @@ public class Constraints {
 
     public List<ExceptionRule> exceptions() {
         return exceptions;
+    }
+
+    public List<UncertaintyRule> uncertainties() {
+        return uncertainties;
+    }
+
+    public List<DerateRule> derates() {
+        return derates;
+    }
+
+    /**
+     * 时钟不确定度规则。corner 为 SETUP 或 HOLD；
+     * scope 为 GLOBAL / CLOCK / PATH（路径级时 from/to 非空，时钟级时 clock 非空）。
+     */
+    public static class UncertaintyRule {
+        public final String corner;
+        public final String scope;
+        public final String clock;
+        public final String from;
+        public final String to;
+        public final double valueNs;
+
+        public UncertaintyRule(String corner, String scope, String clock, String from, String to, double valueNs) {
+            this.corner = corner;
+            this.scope = scope;
+            this.clock = clock;
+            this.from = from;
+            this.to = to;
+            this.valueNs = valueNs;
+        }
+
+        public String key() {
+            return corner + "|" + scope + "|"
+                    + (clock != null ? clock : "") + "|" + (from != null ? from : "")
+                    + "|" + (to != null ? to : "");
+        }
+    }
+
+    /**
+     * 时序降额规则。corner 为 EARLY 或 LATE（不区分早晚的声明在解析期展开为两条）；
+     * scope 为 GLOBAL / CELL_TYPE / INSTANCE。
+     */
+    public static class DerateRule {
+        public final String corner;
+        public final String scope;
+        /** CELL_TYPE 时为单元类型名，INSTANCE 时为实例名，GLOBAL 时为 null。 */
+        public final String target;
+        public final double factor;
+
+        public DerateRule(String corner, String scope, String target, double factor) {
+            this.corner = corner;
+            this.scope = scope;
+            this.target = target;
+            this.factor = factor;
+        }
+
+        public String key() {
+            return corner + "|" + scope + "|" + (target != null ? target : "");
+        }
     }
 }

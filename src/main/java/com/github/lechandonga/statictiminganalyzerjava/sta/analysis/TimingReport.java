@@ -26,12 +26,24 @@ public class TimingReport {
         public PairCategory category;
         public Double setupSlack;
         public Double holdSlack;
+        /** 建立检查使用的最晚（late）到达时间。 */
         public Double arrival;
+        /** 保持检查使用的最早（early）到达时间。 */
+        public Double earlyArrival;
         public Double setupRequired;
         public Double holdRequired;
+        /** 建立/保持检查实际扣减/增加的时钟不确定度。 */
+        public Double setupUncertainty;
+        public Double holdUncertainty;
+        /** 最晚/最早路径上各单元生效的降额系数说明。 */
+        public String derateLate;
+        public String derateEarly;
         /** 例外生效说明，例如 "FALSE_PATH"、"MULTICYCLE x2"；无例外为 null。 */
         public String exception;
+        /** 最晚（建立）路径经过的单元/引脚序列。 */
         public List<String> dataPath = new ArrayList<>();
+        /** 最早（保持）路径经过的单元/引脚序列。 */
+        public List<String> earlyDataPath = new ArrayList<>();
     }
 
     public static class EndpointResult implements Comparable<EndpointResult> {
@@ -40,6 +52,9 @@ public class TimingReport {
         public EndpointStatus status;
         public Double worstSetupSlack;
         public Double worstHoldSlack;
+        /** 最差建立/保持路径对的完整数据（到达、要求、裕量、不确定度、降额、例外）。 */
+        public PathPair worstSetup;
+        public PathPair worstHold;
         public List<PathPair> pairs = new ArrayList<>();
         /** 最差 setup 路径经过的单元/引脚序列。 */
         public List<String> worstSetupPath = new ArrayList<>();
@@ -66,6 +81,8 @@ public class TimingReport {
         public String worstSetupEndpoint;
         public double worstHoldSlack;
         public String worstHoldEndpoint;
+        /** 全部保持违例端点（按名字排序）。 */
+        public List<String> holdViolationEndpoints = new ArrayList<>();
     }
 
     public Status status = Status.OK;

@@ -54,12 +54,24 @@ set_input_delay  0.20 -clock CLK [get_ports IN1]      // [get_ports X] 与 [get_
 set_output_delay 0.10 -clock CLK [get_ports OUT1]
 set_false_path      -from CLK  -to U3/D
 set_multicycle_path 2 -from CLK  -to U6/D
+set_clock_uncertainty 0.05 -setup                  // 全局；可省 -setup/-hold 表示两个方向
+set_clock_uncertainty 0.10 -hold  -clock CLK       // 指定时钟
+set_clock_uncertainty 0.20 -setup -from U1/Q -to U3/D   // 指定路径（-from/-to 必须成对）
+set_timing_derate 1.10 -late                       // 全局；可省 -early/-late 表示两个方向
+set_timing_derate 0.90 -early -cell_type BUF       // 按单元类型
+set_timing_derate 0.80 -early -instance U2         // 按实例
 ```
 
 - `create_clock` 的时钟名必须等于一个主输入线网名；同名重复定义报错；
 - `-waveform` 仅校验 `0 <= rise < fall < period`，本分析器使用理想单周期时钟，边沿相位不参与计算；
 - `-from/-to` 可以引用：时钟名、主输入/主输出端口名、单元引脚（`实例/引脚`）；引用不存在即报错；
 - 同一对 `(from,to)` 的例外声明重复出现报错（`DUPLICATE_DEFINITION`）。
+- `set_clock_uncertainty` 的不确定度必须为非负有限数；`-clock` 与 `-from/-to` 互斥；
+  生效范围与优先级见 `docs/timing-rules.md` 第 7 节；
+- `set_timing_derate` 的系数必须为正有限数；`-cell_type` 与 `-instance` 互斥；
+  覆盖规则见 `docs/timing-rules.md` 第 8 节；
+- 三份输入完全向后兼容：不写任何不确定度/降额声明时，不确定度按 0、降额按 1.0 处理，
+  旧输入的分析结论不变。
 
 ## 错误码（可程序化区分失败原因）
 
@@ -79,3 +91,5 @@ set_multicycle_path 2 -from CLK  -to U6/D
 | `EXCEPTION_REF_NOT_FOUND` | 例外的 from/to 无法解析 |
 | `EXCEPTION_CONFLICT` | 同粒度例外互相冲突（见 timing-rules.md） |
 | `CLOCK_CONFLICT` | 不同时钟在同一时钟网络节点汇合 |
+| `UNCERTAINTY_DUPLICATE` / `UNCERTAINTY_INVALID` / `UNCERTAINTY_REF_NOT_FOUND` | 不确定度重复声明 / 数值非法 / 引用无法解析 |
+| `DERATE_DUPLICATE` / `DERATE_INVALID` / `DERATE_REF_NOT_FOUND` | 降额重复声明 / 系数非法 / 单元类型或实例不存在 |

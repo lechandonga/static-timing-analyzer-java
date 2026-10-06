@@ -17,6 +17,10 @@
 - 未约束端点、跨时钟域（CDC）路径对单独归类，不计通过也不计违例；逐端点结论与汇总统计一致；
 - 组合环用迭代 Tarjan SCC 检测并报告环节点，分析不死循环、不产生伪正常结论；
 - 伪路径 / 多周期路径按“粒度最大、伪路径优先、冲突报错”的确定规则生效（见文档第 5 节）；
+- 时钟不确定度支持全局/时钟/路径三级，建立扣减、保持增加，同层取最大、与声明顺序无关；
+- 时序降额支持全局/单元类型/实例三级与早/晚角分离，clk_to_q 同步降额，最差路径报告可见生效系数；
+- 每个端点给出最差 setup/hold 路径对的完整签核数据（到达/要求/裕量/不确定度/降额/例外），
+  保持违例端点单独列出；
 - 全部排序输出，重复分析与声明顺序调整结果逐字节一致。
 
 ## 本地运行
@@ -66,3 +70,25 @@ mvn -o test -Dtest=StaBusinessTest 2>&1 | grep "STA-BUSINESS"
 | B5 | 伪路径 × 多周期同粒度冲突 → `EXCEPTION_CONFLICT` |
 | B6 | 非法单位 / 单元引用缺失 / 时钟源缺失，错误码可区分 |
 | B7 | 重复分析逐字节一致；约束声明顺序调整不影响结论 |
+| B8 | 时钟不确定度：setup/hold 两个方向落点、三级优先级、乱序一致、非法声明、多周期 CDC 叠加 |
+| B9 | 时序降额：早/晚角分离、实例>类型>全局覆盖、clk_to_q 降额、非法声明 |
+| B10 | 保持违例探针：hold≈0.5ns 寄存器与输出延时>到达的输出路径报出负 slack 并定位 |
+| B11 | 2000 级深组合链回归：不爆栈、叠加新规则结论正确 |
+| B12 | HTTP 入口：保持违例清单与最差路径完整数据在 JSON 中可见 |
+
+## 探针验证（本地复现保持违例）
+
+`src/test/resources/cases/hold_probe/` 是一个可直接运行的探针：
+自定义库把寄存器 `hold` 提到 0.5 ns，网表包含一条 Q 直达 D 的近零到达路径、
+一条输出延时（0.5 ns）大于数据到达（0.08 ns）的输出路径，以及一条到达足够大的对照路径。
+运行方式（任选一个入口）：
+
+```bash
+java -jar target/static-timing-analyzer-java-1.0-SNAPSHOT.jar --sta.run \
+  --sta.library=src/test/resources/cases/hold_probe/cells.lib \
+  --sta.netlist=src/test/resources/cases/hold_probe/design.net \
+  --sta.constraints=src/test/resources/cases/hold_probe/constraints.sdc
+```
+
+预期：`pin:U2/D` 与 `port:OUT1` 报 `HOLD_VIOLATED`、slack=-0.42 ns，
+汇总区“保持违例端点”列出两者，对照路径 `pin:U4/D` 保持 MET。
