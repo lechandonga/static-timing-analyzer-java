@@ -11,6 +11,8 @@ public class TimingReport {
     public enum PairCategory { CONSTRAINED, CDC, UNCONSTRAINED, FALSE_PATH }
 
     public enum EndpointStatus {
+        /** 建立与保持同时违例：既计入建立违例，也计入保持违例清单与统计。 */
+        SETUP_HOLD_VIOLATED,
         SETUP_VIOLATED, HOLD_VIOLATED, MET, UNCONSTRAINED, CDC
     }
 

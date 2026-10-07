@@ -1,0 +1,19 @@
+unit ns
+cell DFF seq
+  pin D seq_in
+  pin CK clk
+  pin Q seq_out
+  timing setup=0.05 hold=0.02 clk_to_q=0.08
+endcell
+cell DFFSH seq
+  pin D seq_in
+  pin CK clk
+  pin Q seq_out
+  timing setup=0.95 hold=0.5 clk_to_q=0.08
+endcell
+cell DFFS seq
+  pin D seq_in
+  pin CK clk
+  pin Q seq_out
+  timing setup=0.95 hold=0.02 clk_to_q=0.08
+endcell

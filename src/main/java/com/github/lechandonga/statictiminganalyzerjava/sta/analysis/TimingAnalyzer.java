@@ -626,7 +626,9 @@ public class TimingAnalyzer {
         double holdRequired;
         if (cdc) {
             setupRequired = nSetup * capture.periodNs - ei.extraDelay - ei.setupTime;
-            holdRequired = -(double) nHold * capture.periodNs + ei.extraDelay + ei.holdTime;
+            // 多周期保持检查口径与同时钟一致：捕获沿位于 N_hold 个捕获周期处，
+            // 保持时间为正要求（到达不得早于它），不允许出现负的要求时间。
+            holdRequired = (double) nHold * capture.periodNs + ei.extraDelay + ei.holdTime;
         } else {
             setupRequired = nSetup * launch.periodNs - ei.extraDelay - ei.setupTime;
             holdRequired = (double) nHold * launch.periodNs + ei.extraDelay + ei.holdTime;
@@ -853,7 +855,8 @@ public class TimingAnalyzer {
             er.worstHoldPath = worstHold.earlyDataPath;
             boolean sv = worstSetup.setupSlack < -EPS;
             boolean hv = worstHold.holdSlack < -EPS;
-            er.status = sv ? TimingReport.EndpointStatus.SETUP_VIOLATED
+            er.status = sv && hv ? TimingReport.EndpointStatus.SETUP_HOLD_VIOLATED
+                    : sv ? TimingReport.EndpointStatus.SETUP_VIOLATED
                     : hv ? TimingReport.EndpointStatus.HOLD_VIOLATED
                     : TimingReport.EndpointStatus.MET;
         } else if (cdcPairs > 0 && uncovered == 0) {
@@ -881,6 +884,11 @@ public class TimingAnalyzer {
         for (TimingReport.EndpointResult er : report.endpoints) {
             s.totalEndpoints++;
             switch (er.status) {
+                case SETUP_HOLD_VIOLATED -> {
+                    s.setupViolations++;
+                    s.holdViolations++;
+                    s.holdViolationEndpoints.add(er.endpoint);
+                }
                 case SETUP_VIOLATED -> s.setupViolations++;
                 case HOLD_VIOLATED -> {
                     s.holdViolations++;

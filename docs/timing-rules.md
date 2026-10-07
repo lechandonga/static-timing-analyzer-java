@@ -37,7 +37,10 @@ hold  required = N_hold  * T + d + uncertainty_hold
 ```
 
 默认 `N_setup = 1`、`N_hold = 0`，建立与保持使用同一套多周期参数（见第 5 节）。
-判定阈值：slack < -1e-9 ns 记为违例（`SETUP_VIOLATED` / `HOLD_VIOLATED`，setup 优先）。
+判定阈值：slack < -1e-9 ns 记为违例。端点结论按两个方向独立判定：
+仅建立违例 `SETUP_VIOLATED`、仅保持违例 `HOLD_VIOLATED`、
+**两个方向同时违例 `SETUP_HOLD_VIOLATED`**（既计入建立违例数，也计入保持违例数与保持违例端点清单）、
+均满足 `MET`。
 
 > 保持检查口径：hold required = N_hold × T **+ h**（保持时间为正要求，到达必须不早于它）。
 > 早期版本曾误写为 −h，导致寄存器路径不可能报出保持违例；已修正，B1 用例的旧期望值同步按正确口径更新。
@@ -49,7 +52,12 @@ hold  required = N_hold  * T + d + uncertainty_hold
 - 默认归类为 `CDC`：**不计算 slack、不计入通过/违例统计**，只在端点备注中给出路径对数；
 - 用 `set_multicycle_path N -from <时钟A> -to <端点>` 显式声明后才进行检查：
   - setup required = N × 捕获时钟周期 − su（或输出延时）− uncertainty_setup
-  - hold required = −(N−1) × 捕获时钟周期 + h（输出端口为 −(N−1)×T + d）+ uncertainty_hold
+  - hold required = (N−1) × 捕获时钟周期 + h（输出端口为 (N−1)×T + d）+ uncertainty_hold
+
+> 多周期保持检查口径：与同时钟路径完全一致——保持捕获沿位于 `N_hold = N−1` 个**捕获时钟周期**处，
+> 保持时间为正要求（数据到达不得早于它），保持方向的不确定度照常加到要求时间上。
+> 早期版本曾把该项误写为 `−(N−1)×T`，导致要求时间恒为负、保持裕量恒正，
+> 跨时钟域多周期路径永远查不出保持违例；已修正，B8-5 用例的旧期望值同步按正确口径更新。
 
 端点级状态：只要存在受约束路径对，端点由受约束对决定；没有任何受约束对、但存在 CDC 对时记 `CDC`；
 其余记 `UNCONSTRAINED`（发射或捕获侧缺少时钟/IO 延时的路径对）。未约束与 CDC 端点既不计通过也不计违例。
@@ -120,7 +128,12 @@ set_timing_derate 0.95                            // 不写 -early/-late：两�
 
 - 每个端点给出最差 setup 与最差 hold 路径对的完整数据：到达、要求、裕量、
   生效的不确定度、逐单元降额系数、命中的例外来源；命令行文本报告与 HTTP JSON 均包含。
-- 汇总区单独列出全部保持违例端点（`holdViolationEndpoints`），数量与逐端点统计一致。
+- 端点结论 `status` 两个方向独立判定；建立与保持同时不达标的端点记为 `SETUP_HOLD_VIOLATED`，
+  同时计入 `setupViolations` 与 `holdViolations`（因此两者之和可以超过端点总数）。
+- 汇总区单独列出全部保持违例端点（`holdViolationEndpoints`，含 `HOLD_VIOLATED` 与
+  `SETUP_HOLD_VIOLATED` 端点，按名字排序），数量与 `holdViolations` 一致；
+  `worstHoldSlack` / `worstHoldEndpoint` 与逐端点的最差保持裕量互相对得上；
+  仅建立违例、保持正常的端点不会出现在保持违例清单中。
 
 ## 10. 可复现性
 

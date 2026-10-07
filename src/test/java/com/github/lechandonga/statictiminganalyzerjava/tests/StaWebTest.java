@@ -43,4 +43,29 @@ class StaWebTest {
                 .andExpect(jsonPath("$.endpoints[?(@.endpoint=='pin:U2/D')].worstHold.derateEarly").exists());
         log.info("[B12 HTTP 入口] 结果：summary 与端点级新字段均可见 ✓");
     }
+
+    @Test
+    @DisplayName("B12-2 HTTP 入口：同时违例端点结论与保持清单和命令行文本报告一致")
+    void httpConsistentWithCliOnDoubleViolation() throws Exception {
+        log.info("[B12 HTTP 入口] POST /sta/analyze 用例 both_violated");
+        String body = """
+                {"library":"src/test/resources/cases/both_violated/cells.lib",
+                 "netlist":"src/test/resources/cases/both_violated/design.net",
+                 "constraints":"src/test/resources/cases/both_violated/constraints.sdc"}
+                """;
+        mvc.perform(post("/sta/analyze").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.summary.holdViolations").value(1))
+                .andExpect(jsonPath("$.summary.setupViolations").value(2))
+                .andExpect(jsonPath("$.summary.holdViolationEndpoints[0]").value("pin:U2/D"))
+                .andExpect(jsonPath("$.summary.worstHoldSlack").value(-0.42))
+                .andExpect(jsonPath("$.summary.worstHoldEndpoint").value("pin:U2/D"))
+                .andExpect(jsonPath("$.endpoints[?(@.endpoint=='pin:U2/D')].status")
+                        .value("SETUP_HOLD_VIOLATED"))
+                .andExpect(jsonPath("$.endpoints[?(@.endpoint=='pin:U3/D')].status")
+                        .value("SETUP_VIOLATED"))
+                .andExpect(jsonPath("$.text").value(
+                        org.hamcrest.Matchers.containsString("保持违例端点: pin:U2/D")));
+        log.info("[B12 HTTP 入口] 结果：HTTP 与文本报告对同时违例的结论一致 ✓");
+    }
 }
