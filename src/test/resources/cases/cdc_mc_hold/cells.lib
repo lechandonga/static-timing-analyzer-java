@@ -1,0 +1,20 @@
+unit ns
+cell BUF comb
+  pin A comb
+  pin Y comb
+  delay A Y 0.30
+endcell
+cell DFF seq
+  pin D seq_in
+  pin CK clk
+  pin Q seq_out
+  timing setup=0.05 hold=0.02 clk_to_q=0.08
+endcell
+// 捕获侧保持要求大：多周期保持检查在“捕获周期远大于保持时间”时，
+// 旧（捕获周期）口径必然正裕量；新（发射周期）口径下 Q 直达路径会违例。
+cell DFFH seq
+  pin D seq_in
+  pin CK clk
+  pin Q seq_out
+  timing setup=0.05 hold=1.20 clk_to_q=0.08
+endcell

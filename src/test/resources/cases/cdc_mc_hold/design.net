@@ -1,0 +1,30 @@
+input CLK1
+input CLK2
+input IN1
+input IN2
+inst U1 DFF
+  pin D IN1
+  pin CK CLK1
+  pin Q N1
+endinst
+// 违例探针：Q 直达大保持捕获寄存器
+inst U2 DFFH
+  pin D N1
+  pin CK CLK2
+  pin Q N2
+endinst
+inst U3 DFF
+  pin D IN2
+  pin CK CLK1
+  pin Q N3
+endinst
+// 对照：中间加 BUF，到达变大，保持裕量为正
+inst U4 BUF
+  pin A N3
+  pin Y N4
+endinst
+inst U5 DFFH
+  pin D N4
+  pin CK CLK2
+  pin Q N5
+endinst

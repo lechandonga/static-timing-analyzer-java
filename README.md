@@ -74,7 +74,9 @@ mvn -o test -Dtest=StaBusinessTest 2>&1 | grep "STA-BUSINESS"
 | B9 | 时序降额：早/晚角分离、实例>类型>全局覆盖、clk_to_q 降额、非法声明 |
 | B10 | 保持违例探针：hold≈0.5ns 寄存器与输出延时>到达的输出路径报出负 slack 并定位 |
 | B11 | 2000 级深组合链回归：不爆栈、叠加新规则结论正确 |
-| B12 | HTTP 入口：保持违例清单与最差路径完整数据在 JSON 中可见 |
+| B12 | HTTP 入口：保持清单、同时违例双侧计数、CDC 多周期保持在 JSON 中可见，与文本一致 |
+| B13 | 建立+保持同时违例：双违例端点双侧计数/清单/最差项对账；仅建立违例不误入保持清单 |
+| B14 | 跨时钟域多周期保持按发射周期口径：短路径该违例、缓冲对照不违例、不确定度计入、重排一致 |
 
 ## 探针验证（本地复现保持违例）
 
@@ -92,3 +94,44 @@ java -jar target/static-timing-analyzer-java-1.0-SNAPSHOT.jar --sta.run \
 
 预期：`pin:U2/D` 与 `port:OUT1` 报 `HOLD_VIOLATED`、slack=-0.42 ns，
 汇总区“保持违例端点”列出两者，对照路径 `pin:U4/D` 保持 MET。
+
+## 探针验证（建立/保持同时违例 与 跨时钟域多周期保持）
+
+### 1. 建立+保持同时违例（`src/test/resources/cases/both_violate/`）
+
+输出端口 OUT1 的输出延时取 0.95 ns（周期 1.0 ns）：
+
+- setup required = 1.0 − 0.95 = 0.05 ns，数据到达 0.08 ns ⇒ setup slack = −0.03 ns；
+- hold  required = 0.95 ns，early 到达 0.08 ns ⇒ hold slack = −0.87 ns。
+
+同一端点两类裕量同时为负，结论为 `SETUP_AND_HOLD_VIOLATED`，同时计入建立/保持计数并进入
+保持违例端点清单；同用例 `pin:U2/D` 仅保持为负（`HOLD_VIOLATED`），`pin:U4/D` 经 0.8 ns
+缓冲保持 MET。运行：
+
+```bash
+java -jar target/static-timing-analyzer-java-1.0-SNAPSHOT.jar --sta.run \
+  --sta.library=src/test/resources/cases/both_violate/cells.lib \
+  --sta.netlist=src/test/resources/cases/both_violate/design.net \
+  --sta.constraints=src/test/resources/cases/both_violate/constraints.sdc
+```
+
+### 2. 跨时钟域多周期保持（`src/test/resources/cases/cdc_mc_hold/`）
+
+发射时钟 CLK1=1 ns、捕获时钟 CLK2=8 ns（捕获周期远大于保持时间），两条路径都声明
+`set_multicycle_path 2` 并加 0.05 ns 保持不确定度。保持检查按通行口径移动发射边沿：
+
+- hold required = −(2−1)×1.0 + 1.20（捕获寄存器保持时间）+ 0.05 = 0.25 ns；
+- `pin:U2/D` 为 Q 直达（early 到达 0.08 ns）⇒ hold slack = −0.17 ns，报保持违例；
+- `pin:U5/D` 中间有 0.30 ns 缓冲（early 到达 0.38 ns）⇒ hold slack = +0.13 ns，MET；
+- 建立方向仍按捕获时钟：setup required = 2×8 − 0.05 = 15.95 ns，两条路径均不违例。
+
+旧口径在此量级下用捕获周期（−8+1.20+0.05=−6.75 ns）永远得到正保持裕量；改用发射周期后
+该报的违例报得出。把同一组数值（T=1、N=2）放回同时钟多周期路径，hold required 同为
+0.25 ns，两个域口径一致。运行参数把上例目录换成 `cdc_mc_hold` 即可。
+
+## 兼容范围
+
+- 不写任何不确定度/降额声明、也不涉及多周期例外的老输入：分析结论与此前版本逐字节一致；
+- 单周期（默认）建立/保持口径不变；同时钟多周期路径口径不变；
+- 行为变化仅两处：跨时钟域**多周期**路径的保持检查改用发射时钟周期；
+  同一端点建立/保持同时为负时新增 `SETUP_AND_HOLD_VIOLATED` 结论并双侧计数。

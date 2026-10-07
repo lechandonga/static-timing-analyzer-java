@@ -1,0 +1,31 @@
+input CLK
+input IN1
+output OUT1
+inst U1 DFFH
+  pin D IN1
+  pin CK CLK
+  pin Q N1
+endinst
+// 探针 1：Q 直达，保持违例（0.08 < 0.5），但建立裕量正（0.08 < 0.95）——单侧保持
+inst U2 DFFH
+  pin D N1
+  pin CK CLK
+  pin Q N2
+endinst
+// 探针 2：Q 直达主输出；输出延时 0.6 > 0.08 触发保持违例，
+// 同时 1.0-0.6=0.4 < 0.08 不成立 => 需要更大输出延时让建立也违例：见约束 0.95
+inst U3 DFFH
+  pin D IN1
+  pin CK CLK
+  pin Q OUT1
+endinst
+// 对照：经过 SLOW 缓冲，到达 0.88，保持正常
+inst U5 SLOW
+  pin A N1
+  pin Y N3
+endinst
+inst U4 DFFH
+  pin D N3
+  pin CK CLK
+  pin Q N4
+endinst

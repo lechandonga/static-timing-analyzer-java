@@ -37,7 +37,15 @@ hold  required = N_hold  * T + d + uncertainty_hold
 ```
 
 默认 `N_setup = 1`、`N_hold = 0`，建立与保持使用同一套多周期参数（见第 5 节）。
-判定阈值：slack < -1e-9 ns 记为违例（`SETUP_VIOLATED` / `HOLD_VIOLATED`，setup 优先）。
+判定阈值：slack < -1e-9 ns 记为违例。端点结论分四类：
+
+- 只有建立违例：`SETUP_VIOLATED`；只有保持违例：`HOLD_VIOLATED`；
+- **建立、保持最差裕量同时为负：`SETUP_AND_HOLD_VIOLATED`**（不再 setup 优先而吞掉保持违例）；
+- 两者均非负：`MET`。
+
+同时违例端点在汇总中**两侧各计一次**：既计入 `setupViolations` 也计入
+`holdViolations`，并进入 `holdViolationEndpoints` 清单；仅建立违例的端点不进入保持清单。
+`holdViolations`、`holdViolationEndpoints` 长度、最差保持裕量与其端点四者始终对得上。
 
 > 保持检查口径：hold required = N_hold × T **+ h**（保持时间为正要求，到达必须不早于它）。
 > 早期版本曾误写为 −h，导致寄存器路径不可能报出保持违例；已修正，B1 用例的旧期望值同步按正确口径更新。
@@ -49,7 +57,16 @@ hold  required = N_hold  * T + d + uncertainty_hold
 - 默认归类为 `CDC`：**不计算 slack、不计入通过/违例统计**，只在端点备注中给出路径对数；
 - 用 `set_multicycle_path N -from <时钟A> -to <端点>` 显式声明后才进行检查：
   - setup required = N × 捕获时钟周期 − su（或输出延时）− uncertainty_setup
-  - hold required = −(N−1) × 捕获时钟周期 + h（输出端口为 −(N−1)×T + d）+ uncertainty_hold
+  - hold required = −(N−1) × **发射时钟周期** + h（输出端口为 +d）+ uncertainty_hold
+
+> 多周期保持检查口径（SDC/PrimeTime 通行做法）：建立检查移动的是捕获时钟边沿，
+> 所以 `N_setup` 乘**捕获**时钟周期；保持检查移动的是**发射**时钟边沿（默认回退
+> N−1 个发射周期，符号为负），所以无论路径是否跨时钟域，`N_hold` 一律乘**发射**
+> 时钟周期。早期版本在跨时钟域时误用捕获周期：捕获周期远大于保持时间（常见量级）时，
+> hold required 被压到极负，同一组数值在同时钟多周期路径上能报出保持违例，换成跨时钟域
+> 却怎么调都是正裕量。现按通行口径修正；保持方向的时钟不确定度仍按第 7 节照常加入
+> hold required。B8-5 用例的旧期望值（−0.73/1.11，按捕获周期 0.8ns 算出）已按正确口径
+> 更新为 −0.93/1.31（发射周期 1.0ns）。
 
 端点级状态：只要存在受约束路径对，端点由受约束对决定；没有任何受约束对、但存在 CDC 对时记 `CDC`；
 其余记 `UNCONSTRAINED`（发射或捕获侧缺少时钟/IO 延时的路径对）。未约束与 CDC 端点既不计通过也不计违例。
@@ -120,7 +137,17 @@ set_timing_derate 0.95                            // 不写 -early/-late：两�
 
 - 每个端点给出最差 setup 与最差 hold 路径对的完整数据：到达、要求、裕量、
   生效的不确定度、逐单元降额系数、命中的例外来源；命令行文本报告与 HTTP JSON 均包含。
-- 汇总区单独列出全部保持违例端点（`holdViolationEndpoints`），数量与逐端点统计一致。
+- 端点结论字段 `status` 取值：`SETUP_VIOLATED` / `HOLD_VIOLATED` /
+  `SETUP_AND_HOLD_VIOLATED` / `MET` / `UNCONSTRAINED` / `CDC`。
+  同一端点建立、保持最差裕量同时为负时给 `SETUP_AND_HOLD_VIOLATED`，
+  文本报告“结论:”列与 HTTP JSON 的 `endpoints[].status` 用同一个枚举字符串。
+- 汇总区单独列出全部保持违例端点（`holdViolationEndpoints`），同时违例端点也在其中；
+  该清单长度 = `holdViolations`，且与逐端点 `status` 集合、`worstHoldSlack` /
+  `worstHoldEndpoint` 互相一致。
+- 两个入口查看同一份结论：
+  - 命令行：`--sta.run ...` 直接打印文本报告，汇总区“保持违例端点:”一行即清单；
+  - HTTP：`POST /sta/analyze` 返回的 `text` 字段与命令行文本逐字节同源，
+    结构化数据在 `summary` 与 `endpoints` 中，两处结论必然一致。
 
 ## 10. 可复现性
 

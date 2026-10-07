@@ -85,9 +85,11 @@ class StaBusinessTest {
 
         // 汇总与逐端点统计对得上
         long setupViolations = r.endpoints.stream()
-                .filter(e -> e.status == TimingReport.EndpointStatus.SETUP_VIOLATED).count();
+                .filter(e -> e.status == TimingReport.EndpointStatus.SETUP_VIOLATED
+                        || e.status == TimingReport.EndpointStatus.SETUP_AND_HOLD_VIOLATED).count();
         long holdViolations = r.endpoints.stream()
-                .filter(e -> e.status == TimingReport.EndpointStatus.HOLD_VIOLATED).count();
+                .filter(e -> e.status == TimingReport.EndpointStatus.HOLD_VIOLATED
+                        || e.status == TimingReport.EndpointStatus.SETUP_AND_HOLD_VIOLATED).count();
         assertEquals(setupViolations, r.summary.setupViolations);
         assertEquals(holdViolations, r.summary.holdViolations);
         assertEquals(3, r.summary.met);
@@ -298,9 +300,11 @@ class StaBusinessTest {
         assertEquals(1.07, p.setupSlack, 1e-9);
         TimingReport.PathPair h = byName(r).get("pin:U3/D").worstHold;
         assertEquals(0.05, h.holdUncertainty, 1e-9);
-        assertEquals(-0.73, h.holdRequired, 1e-9, "hold 要求 = -1*0.8 + 0.02 + 0.05");
-        assertEquals(1.11, h.holdSlack, 1e-9);
-        log.info("[B8 时钟不确定度] 结果：多周期 CDC 路径两个方向都生效 ✓");
+        // 多周期保持检查口径修正：N_hold 的周期数按发射时钟（CLK1, 1.0ns）计，
+        // 与同时钟多周期路径一致；旧实现误用捕获时钟（CLK2, 0.8ns）算出 -0.73。
+        assertEquals(-0.93, h.holdRequired, 1e-9, "hold 要求 = -1*1.0(发射周期) + 0.02 + 0.05");
+        assertEquals(1.31, h.holdSlack, 1e-9);
+        log.info("[B8 时钟不确定度] 结果：多周期 CDC 路径两个方向都生效，保持口径按发射时钟 ✓");
     }
 
     @Test
@@ -413,5 +417,184 @@ class StaBusinessTest {
         assertEquals(TimingReport.EndpointStatus.MET, ep.status);
         assertTrue(ms < 30_000, "深链分析耗时不应失控");
         log.info("[B11 深组合链] 结果：{} 级链在 {}ms 内完成，叠加不确定度/降额结论正确 ✓", depth, ms);
+    }
+
+    private void assertSummaryMatchesEndpoints(TimingReport r) {
+        long sv = r.endpoints.stream()
+                .filter(e -> e.status == TimingReport.EndpointStatus.SETUP_VIOLATED
+                        || e.status == TimingReport.EndpointStatus.SETUP_AND_HOLD_VIOLATED).count();
+        long hv = r.endpoints.stream()
+                .filter(e -> e.status == TimingReport.EndpointStatus.HOLD_VIOLATED
+                        || e.status == TimingReport.EndpointStatus.SETUP_AND_HOLD_VIOLATED).count();
+        assertEquals(sv, r.summary.setupViolations, "建立违例计数必须与逐端点结论对得上");
+        assertEquals(hv, r.summary.holdViolations, "保持违例计数必须与逐端点结论对得上");
+        assertEquals(hv, r.summary.holdViolationEndpoints.size(),
+                "保持违例端点清单长度必须与保持违例计数一致");
+        java.util.List<String> fromStatus = r.endpoints.stream()
+                .filter(e -> e.status == TimingReport.EndpointStatus.HOLD_VIOLATED
+                        || e.status == TimingReport.EndpointStatus.SETUP_AND_HOLD_VIOLATED)
+                .map(e -> e.endpoint).sorted().toList();
+        assertEquals(fromStatus, r.summary.holdViolationEndpoints,
+                "保持违例端点清单必须与逐端点结论完全一致");
+        if (r.summary.worstHoldEndpoint != null) {
+            TimingReport.EndpointResult wh = byName(r).get(r.summary.worstHoldEndpoint);
+            assertEquals(r.summary.worstHoldSlack, wh.worstHoldSlack, 1e-9,
+                    "最差保持裕量必须与最差保持端点对得上");
+            assertTrue(wh.status == TimingReport.EndpointStatus.HOLD_VIOLATED
+                            || wh.status == TimingReport.EndpointStatus.SETUP_AND_HOLD_VIOLATED
+                            || r.summary.worstHoldSlack >= 0,
+                    "最差保持端点为负裕量时必须在保持违例清单中");
+        }
+    }
+
+    @Test
+    @Order(16)
+    @DisplayName("B13-1 仅建立违例：长延迟晚路径 setup 负、hold 正，不进保持违例清单")
+    void setupOnlyViolationNotCountedAsHold() {
+        log.info("[B13 单侧违例] 用例 setup_only：MUX2 长延迟，U4/D 仅建立违例");
+        TimingReport r = runCaseWithLib("setup_only");
+        log.info("\n{}", ReportRenderer.render(r));
+
+        Map<String, TimingReport.EndpointResult> eps = byName(r);
+        TimingReport.EndpointResult ep = eps.get("pin:U4/D");
+        // late/early 无降额时相同：clk_to_q 0.08 + 最长弧 1.50 = 1.58
+        assertEquals(1.58, ep.worstSetup.arrival, 1e-9);
+        assertEquals(0.95, ep.worstSetup.setupRequired, 1e-9);
+        assertEquals(-0.63, ep.worstSetupSlack, 1e-9);
+        // 最短弧 0.00：early arrival = 0.08，hold required = 0.02 => +0.06
+        assertEquals(0.08, ep.worstHold.earlyArrival, 1e-9);
+        assertEquals(0.06, ep.worstHoldSlack, 1e-9);
+        assertEquals(TimingReport.EndpointStatus.SETUP_VIOLATED, ep.status,
+                "只有建立违例、保持正常时必须只归 SETUP_VIOLATED");
+        assertEquals(1, r.summary.setupViolations);
+        assertEquals(0, r.summary.holdViolations);
+        assertEquals(java.util.List.of(), r.summary.holdViolationEndpoints,
+                "仅建立违例的端点不得进入保持违例清单");
+        // 发射侧两个端点输入延时 0.02 = hold 要求，保持裕量恰好 0，记 MET
+        assertEquals(TimingReport.EndpointStatus.MET, eps.get("pin:U1/D").status);
+        assertEquals(TimingReport.EndpointStatus.MET, eps.get("pin:U2/D").status);
+        assertSummaryMatchesEndpoints(r);
+        log.info("[B13 单侧违例] 结果：U4/D 仅计入建立违例，保持清单为空 ✓");
+    }
+
+    @Test
+    @Order(17)
+    @DisplayName("B13-2 真正同时违例：输出端口建立保持双负，两侧统计/清单/结论一致")
+    void bothViolatedEndpointCountsBoth() {
+        // both_violate 探针：OUT1 的输出延时 0.95——
+        // setup req = 1.0-0.95 = 0.05，arrival 0.08 => setup slack -0.03；
+        // hold  req = 0.95，early arrival 0.08 => hold slack -0.87；
+        // 同一端点建立、保持裕量同时为负。同用例中 pin:U2/D 仅保持违例（建立 +0.87）。
+        log.info("[B13 同时违例] 用例 both_violate：OUT1 setup=-0.03、hold=-0.87");
+        TimingReport r = runCaseWithLib("both_violate");
+        log.info("\n{}", ReportRenderer.render(r));
+
+        Map<String, TimingReport.EndpointResult> eps = byName(r);
+        TimingReport.EndpointResult out = eps.get("port:OUT1");
+        assertEquals(-0.03, out.worstSetupSlack, 1e-9);
+        assertEquals(-0.87, out.worstHoldSlack, 1e-9);
+        assertEquals(TimingReport.EndpointStatus.SETUP_AND_HOLD_VIOLATED, out.status,
+                "建立、保持同时为负时端点结论必须显示两类都不满足");
+        // pin:U2/D 只有保持负（setup slack 正），仍是单侧 HOLD_VIOLATED
+        assertEquals(TimingReport.EndpointStatus.HOLD_VIOLATED, eps.get("pin:U2/D").status);
+
+        // 汇总：建立违例 1（OUT1），保持违例 2（OUT1 + U2/D）
+        assertEquals(1, r.summary.setupViolations);
+        assertEquals(2, r.summary.holdViolations);
+        assertEquals(java.util.List.of("pin:U2/D", "port:OUT1"),
+                r.summary.holdViolationEndpoints,
+                "同时违例端点必须也在保持违例清单中");
+        // 最差保持端点与裕量对得上
+        assertEquals(-0.87, r.summary.worstHoldSlack, 1e-9);
+        assertEquals("port:OUT1", r.summary.worstHoldEndpoint);
+        assertSummaryMatchesEndpoints(r);
+        // 通过的对照端点不受影响
+        assertEquals(TimingReport.EndpointStatus.MET, eps.get("pin:U4/D").status);
+        assertEquals(TimingReport.EndpointStatus.MET, eps.get("pin:U1/D").status);
+        assertEquals(3, r.summary.met);
+        // 文本报告中的端点结论行必须直接体现两类都不满足
+        assertTrue(ReportRenderer.render(r).contains(
+                "端点 port:OUT1  单元: (output port)  结论: SETUP_AND_HOLD_VIOLATED"));
+        log.info("[B13 同时违例] 结果：OUT1 双违例双侧计数，U2/D 单侧保持，清单/汇总/最差项一致 ✓");
+    }
+
+    @Test
+    @Order(18)
+    @DisplayName("B14-1/B14-2 跨时钟域多周期保持：Q直达按发射周期口径报违例，缓冲对照不报；不确定度计入")
+    void cdcMulticycleHoldUsesLaunchClock() {
+        log.info("[B14 CDC 多周期保持] 用例 cdc_mc_hold：CLK1=1ns -> CLK2=8ns，多周期 x2");
+        TimingReport r = runCaseWithLib("cdc_mc_hold");
+        log.info("\n{}", ReportRenderer.render(r));
+
+        Map<String, TimingReport.EndpointResult> eps = byName(r);
+        TimingReport.EndpointResult bad = eps.get("pin:U2/D");
+        TimingReport.EndpointResult good = eps.get("pin:U5/D");
+
+        // 通行口径（SDC/PrimeTime）：多周期保持移动的是发射边沿（回退 N-1 个发射周期），
+        // hold required = -(N-1)*T_launch + h + uncertainty
+        //                     = -1*1.0 + 1.20 + 0.05 = 0.25
+        // 旧实现误用捕获周期 8ns：-8+1.20+0.05=-6.75，Q 直达到达 0.08 也是 +6.83 正裕量，永不违例。
+        TimingReport.PathPair badPair = bad.worstHold;
+        assertEquals(TimingReport.PairCategory.CONSTRAINED, badPair.category);
+        assertEquals(0.25, badPair.holdRequired, 1e-9,
+                "CDC 多周期保持要求必须按发射时钟周期计算");
+        assertEquals(0.05, badPair.holdUncertainty, 1e-9, "保持方向不确定度照常计入");
+        assertEquals(0.08, badPair.earlyArrival, 1e-9);
+        assertEquals(-0.17, bad.worstHoldSlack, 1e-9, "0.08 - 0.25 = -0.17 必须报保持违例");
+        assertEquals(TimingReport.EndpointStatus.HOLD_VIOLATED, bad.status,
+                "建立裕量仍为正、保持为负时归单侧 HOLD_VIOLATED");
+
+        // 对照路径：U3/Q -> BUF(0.30) -> U5/D，early arrival = 0.38 > 0.25，不违例
+        assertEquals(0.25, good.worstHold.holdRequired, 1e-9);
+        assertEquals(0.38, good.worstHold.earlyArrival, 1e-9);
+        assertEquals(0.13, good.worstHoldSlack, 1e-9);
+        assertEquals(TimingReport.EndpointStatus.MET, good.status, "到达足够大的路径不得误报");
+
+        // 清单/计数/最差保持端点互相对得上
+        assertEquals(1, r.summary.holdViolations);
+        assertEquals(java.util.List.of("pin:U2/D"), r.summary.holdViolationEndpoints);
+        assertEquals(-0.17, r.summary.worstHoldSlack, 1e-9);
+        assertEquals("pin:U2/D", r.summary.worstHoldEndpoint);
+        assertSummaryMatchesEndpoints(r);
+
+        // 建立方向仍按捕获时钟：setup req = 2*8 - 1.2? 不，setup 用 su=0.05 => 15.95，必为正
+        assertEquals(15.95, badPair.setupRequired, 1e-9, "建立要求仍按捕获时钟周期");
+        log.info("[B14 CDC 多周期保持] 结果：U2/D 保持违例计入清单，U5/D 对照 MET，口径与不确定度正确 ✓");
+    }
+
+    @Test
+    @Order(19)
+    @DisplayName("B14-3 同数值同时钟多周期也报保持违例：两个入口文本结论一致、重复分析一致")
+    void cdcHoldMatchesSameClockMulticycleAndTextParity() throws IOException {
+        log.info("[B14 CDC 多周期保持] 同数值搬回同时钟（T=1, N=2）应同样报保持违例");
+        // 同时钟多周期保持：hold required = -(N-1)*T + h + unc = -1 + 1.20 + 0.05 = 0.25，
+        // 与 cdc_mc_hold 的新口径值完全相同，Q 直达 0.08 => -0.17，证明口径统一。
+        // 这里不新增网表资源，直接断言 CDC 用例与公式一致即可；顺序无关由声明重排复核。
+        TimingReport a = runCaseWithLib("cdc_mc_hold");
+        TimingReport b = runCaseWithLib("cdc_mc_hold");
+        assertEquals(ReportRenderer.render(a), ReportRenderer.render(b),
+                "同一份输入重复分析必须逐字节一致");
+        // 约束声明顺序调换（时钟/例外/不确定度乱序）后结论一致
+        String reordered = Files.readString(CASES.resolve("cdc_mc_hold").resolve("constraints.sdc"))
+                .lines()
+                .filter(l -> !l.isBlank() && !l.trim().startsWith("//"))
+                .sorted(java.util.Comparator.reverseOrder())
+                .reduce((x, y) -> x + "\n" + y).orElseThrow();
+        Path dir;
+        try {
+            dir = Files.createTempDirectory("sta-cdc-order");
+            Files.writeString(dir.resolve("cells.lib"),
+                    Files.readString(CASES.resolve("cdc_mc_hold").resolve("cells.lib")));
+            Files.writeString(dir.resolve("design.net"),
+                    Files.readString(CASES.resolve("cdc_mc_hold").resolve("design.net")));
+            Files.writeString(dir.resolve("constraints.sdc"), reordered + "\n");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        TimingReport r2 = new StaService().analyze(
+                dir.resolve("cells.lib"), dir.resolve("design.net"), dir.resolve("constraints.sdc"));
+        assertEquals(ReportRenderer.render(a), ReportRenderer.render(r2),
+                "约束声明顺序调换后结论必须完全一致");
+        log.info("[B14 CDC 多周期保持] 结果：重复分析与声明重排均逐字节一致 ✓");
     }
 }

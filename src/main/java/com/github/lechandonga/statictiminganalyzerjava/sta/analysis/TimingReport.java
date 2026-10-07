@@ -11,7 +11,7 @@ public class TimingReport {
     public enum PairCategory { CONSTRAINED, CDC, UNCONSTRAINED, FALSE_PATH }
 
     public enum EndpointStatus {
-        SETUP_VIOLATED, HOLD_VIOLATED, MET, UNCONSTRAINED, CDC
+        SETUP_VIOLATED, HOLD_VIOLATED, SETUP_AND_HOLD_VIOLATED, MET, UNCONSTRAINED, CDC
     }
 
     public static class Cycle {

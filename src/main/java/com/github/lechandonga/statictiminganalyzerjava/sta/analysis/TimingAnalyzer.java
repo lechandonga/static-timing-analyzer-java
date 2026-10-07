@@ -622,15 +622,14 @@ public class TimingAnalyzer {
             nHold = ex.rule.multiplier() - 1;
             pair.exception = "MULTICYCLE x" + ex.rule.multiplier() + ex.matchedBy;
         }
-        double setupRequired;
-        double holdRequired;
-        if (cdc) {
-            setupRequired = nSetup * capture.periodNs - ei.extraDelay - ei.setupTime;
-            holdRequired = -(double) nHold * capture.periodNs + ei.extraDelay + ei.holdTime;
-        } else {
-            setupRequired = nSetup * launch.periodNs - ei.extraDelay - ei.setupTime;
-            holdRequired = (double) nHold * launch.periodNs + ei.extraDelay + ei.holdTime;
-        }
+        // 建立检查的捕获边沿在捕获时钟上移动，因此用捕获周期；
+        // 保持检查按通行口径（SDC/PrimeTime）移动的是发射时钟边沿：
+        // 默认 N_hold=N-1 时保持边沿回退 (N-1) 个发射周期，因此符号为负、
+        // 周期一律取发射时钟周期（同时钟时即同一周期）。
+        // 旧实现跨时钟域时误用捕获周期，捕获周期远大于保持时间时
+        // 保持要求被压得极负，导致跨时钟域多周期路径永远报不出保持违例。
+        double setupRequired = nSetup * capture.periodNs - ei.extraDelay - ei.setupTime;
+        double holdRequired = -(double) nHold * launch.periodNs + ei.extraDelay + ei.holdTime;
         double uncSetup = uncertainty("SETUP", si.launchClock, start, ei.captureClock, endpoint);
         double uncHold = uncertainty("HOLD", si.launchClock, start, ei.captureClock, endpoint);
         setupRequired -= uncSetup;
@@ -853,7 +852,8 @@ public class TimingAnalyzer {
             er.worstHoldPath = worstHold.earlyDataPath;
             boolean sv = worstSetup.setupSlack < -EPS;
             boolean hv = worstHold.holdSlack < -EPS;
-            er.status = sv ? TimingReport.EndpointStatus.SETUP_VIOLATED
+            er.status = sv && hv ? TimingReport.EndpointStatus.SETUP_AND_HOLD_VIOLATED
+                    : sv ? TimingReport.EndpointStatus.SETUP_VIOLATED
                     : hv ? TimingReport.EndpointStatus.HOLD_VIOLATED
                     : TimingReport.EndpointStatus.MET;
         } else if (cdcPairs > 0 && uncovered == 0) {
@@ -883,6 +883,11 @@ public class TimingAnalyzer {
             switch (er.status) {
                 case SETUP_VIOLATED -> s.setupViolations++;
                 case HOLD_VIOLATED -> {
+                    s.holdViolations++;
+                    s.holdViolationEndpoints.add(er.endpoint);
+                }
+                case SETUP_AND_HOLD_VIOLATED -> {
+                    s.setupViolations++;
                     s.holdViolations++;
                     s.holdViolationEndpoints.add(er.endpoint);
                 }

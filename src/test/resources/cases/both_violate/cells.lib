@@ -1,0 +1,13 @@
+unit ns
+cell SLOW comb
+  pin A comb
+  pin Y comb
+  delay A Y 0.80
+endcell
+// 大保持寄存器：Q 直达路径触发保持违例
+cell DFFH seq
+  pin D seq_in
+  pin CK clk
+  pin Q seq_out
+  timing setup=0.05 hold=0.5 clk_to_q=0.08
+endcell

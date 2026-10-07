@@ -1,0 +1,21 @@
+unit ns
+// 普通缓冲：构造建立违例的长延迟晚路径
+cell BUF comb
+  pin A comb
+  pin Y comb
+  delay A Y 1.50
+endcell
+// 多路选择器：A 走长延迟（建立最差），B 走零延迟（保持最差）
+cell MUX2 comb
+  pin A comb
+  pin B comb
+  pin Y comb
+  delay A Y 1.50
+  delay B Y 0.00
+endcell
+cell DFF seq
+  pin D seq_in
+  pin CK clk
+  pin Q seq_out
+  timing setup=0.05 hold=0.02 clk_to_q=0.08
+endcell
